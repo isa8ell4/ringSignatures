@@ -4,15 +4,10 @@ from functools import reduce
 from ecdsa import SECP256k1, SigningKey, VerifyingKey
 from ecdsa.curves import Curve
 from ecdsa.ellipticcurve import Point, PointJacobi
-class Agent: 
-    def __init__(self, private: SigningKey, public: PointJacobi):
-        self.private = private
-        self.public = public
-
 
 class Ring: 
-    def __init__(self, members: list[Agent], curve: Curve):
-        self.members = members
+    def __init__(self, public_keys: list[PointJacobi], curve: Curve):
+        self.public_keys = public_keys #TODO: list of public keys
         self.curve = curve
 
     def glue(self, msg: str):
@@ -60,19 +55,20 @@ class Ring:
         hash_int = int.from_bytes(hasher.digest(), 'big')
         return hash_int % n  # Return scalar     
 
-    def sign(self, msg: str, z: int):
+    def sign(self, msg: str, z: int, x: SigningKey):
         """
         create a ring signature for message m using the private key at index z. 
 
         Args:
             msg : message to sign
             z: index of the signer
+            x: signing key of signer
         Returns: 
             signature [c, s[0], s[1], ..., s[n-1]]
         """
         sig = []
-        print(self.members[z].public)
-        image = self.members[z].private * self.hash_point(self.members[z].public)
+        # print(self.members[z].public)
+        image = x * self.hash_point(self.public_keys[z])
         # image = self.hash_point(self.members[z].private) * self.hash_point(self.members[z].public)
 
         # generate glue value
@@ -82,9 +78,9 @@ class Ring:
         W = []
         Q = []
 
-        for i in range(len(self.members)):
+        for i in range(len(self.public_keys)):
 
-            if i != z: #TODO
+            if i != z: 
                 w = random.randint(0, g)
                 W.append(w)
             else: 
@@ -94,10 +90,10 @@ class Ring:
 
         L = []
         R = []
-        for i in range(len(self.members)):
+        for i in range(len(self.public_keys)):
             q = Q[i]
             w = W[i]
-            pub = self.members[i].public
+            pub = self.public_keys[i]
             if i != z: 
                 l = q*self.curve.generator + w*pub
                 r = q*self.hash_point(pub) + w*image
@@ -114,7 +110,7 @@ class Ring:
         for w in W: 
             cz -= w
 
-        rz = Q[i] - cz*self.members[i].private
+        rz = Q[i] - cz*x
 
         # c values
         for i, w in enumerate(W):
@@ -147,7 +143,7 @@ class Ring:
         for i in range(len(cs)):
             c = cs[i]
             r = rs[i]
-            pub = self.members[i].public
+            pub = self.public_keys[i]
 
             l = r*self.curve.generator + c*pub
             r = r*self.hash_point(pub) + c*image
@@ -164,38 +160,54 @@ class Ring:
             return True
         return False
 
+
+class Agent: 
+    def __init__(self, z: int, private: SigningKey, public: PointJacobi, ring: Ring):
+        self.z = z
+        self.private = private
+        self.public = public
+        self.ring = ring
+    
+    def sign(self, msg: str):
+
+        return self.ring.sign(msg, self.z, self.private)
+    
+    def verify(self, msg: str, signature, image):
+
+        return self.ring.verify(msg, signature, image)
+
+
 if __name__ =="__main__":
     agents = []
     num_agents = 3
     
     # Choose a curve (this defines G automatically)
     curve = SECP256k1
-    # print(type(curve))
+    sign_keys = [SigningKey.generate(curve=SECP256k1) for i in range(num_agents)]
+    priv_keys = [signing_key.privkey.secret_multiplier for signing_key in sign_keys]
+    pub_keys = [signing_key.get_verifying_key().pubkey.point for signing_key in sign_keys]
+
+    ring = Ring(public_keys=pub_keys, curve=curve)
 
     # initialize agents
     for i in range(num_agents):
-
-        # G is implicit - when you do operations, the library uses it
-        signing_key = SigningKey.generate(curve=SECP256k1)
-        private_key = signing_key.privkey.secret_multiplier
-        public_key = signing_key.get_verifying_key().pubkey.point 
-        # print(f'\npriv:{type(private_key)}\n\t{private_key}')
-        # print(f'pub:{type(public_key)}\n\t{public_key}')
-        a = Agent(private=private_key, public=public_key)
+        priv = priv_keys[i]
+        pub = pub_keys[i]
+        a = Agent(z=i, private=priv, public=pub, ring=ring)
         agents.append(a)
     
-    ring = Ring(members=agents, curve=curve)
-
+    
     ####
     msg1 = b"hello"
     msg2 = b"goodbye"
 
     a1 = agents[0]
-    sig1, image = ring.sign(msg1, 0)
+    a2 = agents[1]
+    sig1, image = a1.sign(msg1)
     print(f'\nsignature: \n{sig1}')
 
-    valid1 = ring.verify(msg1, sig1, image)
-    valid2 = ring.verify(msg2, sig1, image)
+    valid1 = a2.verify(msg1, sig1, image)
+    valid2 = a2.verify(msg2, sig1, image)
 
     print(f'\nmsg1 + sig1 valid: {valid1}')
     print(f'\nmsg2 + sig2 valid: {valid2}')
